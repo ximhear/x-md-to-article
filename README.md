@@ -70,7 +70,8 @@ Keep the X tab visible while it runs. Chrome throttles hidden tabs and X's own d
 - Accepted formats are JPEG, PNG, WebP and GIF; anything else is re-encoded to PNG when the browser
   can decode it. Images that cannot be resolved are left as a `[image: alt]` line and listed in the console.
 
-`samples/image-test/` is a small folder to try: drag it onto a draft.
+`samples/image-test/` is a minimal folder to try and `samples/blog-post/` a fuller one (cover, local PNG/JPEG in
+subfolders, three remote hosts, a table, code, and one deliberately missing file): drag either folder onto a draft.
 
 ## Options
 
@@ -183,7 +184,7 @@ X 편집기에는 **Insert → Table** 블록이 있고, 그 편집 화면은 GF
 - **캡션**: alt 텍스트가 미디어 블록 캡션이 됩니다.
 - JPEG, PNG, WebP, GIF를 받습니다. 그 외 형식은 브라우저가 디코딩할 수 있으면 PNG로 다시 인코딩합니다. 못 찾은 이미지는 `[image: alt]` 한 줄로 남고 콘솔에 목록이 찍힙니다.
 
-`samples/image-test/` 폴더를 초안에 끌어다 놓으면 바로 시험해 볼 수 있습니다.
+`samples/image-test/`(최소 구성) 또는 `samples/blog-post/`(커버, 하위 폴더의 PNG/JPEG, 외부 호스트 3곳, 표, 코드, 일부러 빠뜨린 파일 1개) 폴더를 초안에 끌어다 놓으면 바로 시험해 볼 수 있습니다.
 
 ### 변환 규칙
 
