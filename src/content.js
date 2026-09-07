@@ -127,10 +127,26 @@
       e.dataTransfer.dropEffect = 'copy';
     }
   }
+  // Decide synchronously (the DataTransfer is only readable during the event) whether
+  // this drop is ours: it must carry a folder or a Markdown file. Image-only drops are
+  // left to X so users can still drop a photo into the article.
+  function dropIsOurs(dt) {
+    if (!dt || !Array.from(dt.types).includes('Files')) return false;
+    const isMd = (name) => /\.(md|markdown|mdown|mkd)$/i.test(name || '');
+    for (const it of dt.items || []) {
+      if (it.kind !== 'file') continue;
+      const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
+      if (entry && entry.isDirectory) return true;
+      if (entry && isMd(entry.name)) return true;
+      const f = it.getAsFile && it.getAsFile();
+      if (f && isMd(f.name)) return true;
+    }
+    for (const f of dt.files || []) if (isMd(f.name)) return true;
+    return false;
+  }
   async function onDrop(e) {
     if (!EDIT_RE.test(location.pathname)) return;
-    if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
-    // Only claim drops that contain a Markdown file somewhere; leave image-only drops to X.
+    if (!dropIsOurs(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
     const files = await XMD.images.collectFiles(e.dataTransfer);
