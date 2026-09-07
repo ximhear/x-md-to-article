@@ -130,6 +130,7 @@
   }
 
   async function openInsertItem(label) {
+    if (dialog()) await closeDialogs();
     const btn = await waitFor(insertButton, { label: 'Insert button' });
     btn.click();
     const item = await waitFor(() => byText(qa('[role="menuitem"]'), label), { label: `menu item ${label}` });
@@ -138,10 +139,43 @@
 
   // Dialog nodes get replaced by React while they animate in, so never hold a
   // reference to one: query "[role=dialog] ..." fresh on every poll.
-  const dialog = () => q('[role="dialog"]');
-  const inDialog = (sel) => q('[role="dialog"] ' + sel);
-  const dialogButton = (text) => byText(qa('[role="dialog"] button'), text);
+  // Dialogs can stack (e.g. Media on top of the cover cropper), so always look in
+  // the topmost one first.
+  const dialogs = () => qa('[role="dialog"]');
+  const dialog = () => dialogs()[0] || null;
+  const inDialog = (sel) => {
+    const ds = dialogs();
+    for (let i = ds.length - 1; i >= 0; i--) {
+      const el = ds[i].querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  };
+  const dialogButton = (text) => {
+    const ds = dialogs();
+    for (let i = ds.length - 1; i >= 0; i--) {
+      const b = byText(qa('button', ds[i]), text);
+      if (b) return b;
+    }
+    return null;
+  };
   const waitDialogClosed = () => waitFor(() => !dialog(), { label: 'dialog to close' });
+
+  // Close whatever dialog is open (leftover from a failed step) so the next step
+  // starts from the editor. Tries Close/Back buttons, then Escape.
+  async function closeDialogs() {
+    for (let i = 0; i < 4 && dialog(); i++) {
+      const btn =
+        inDialog('button[aria-label="Close"]') ||
+        inDialog('button[aria-label="Back"]') ||
+        dialogButton('Cancel') ||
+        dialogButton('Close');
+      if (btn) btn.click();
+      else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+      await sleep(400);
+    }
+    return !dialog();
+  }
 
   function tableSections() {
     return blocks().filter((b) => b.querySelector('table'));
@@ -292,15 +326,33 @@
     await placeCursorAtEnd();
   }
 
+  // Click a dialog button whose handler may ignore early clicks (the cover cropper
+  // needs its image decoded first). Re-click every couple of seconds until it is gone.
+  async function clickUntilGone(text, { timeout = 60000, every = 2000 } = {}) {
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      const btn = dialogButton(text);
+      if (!btn) return true;
+      btn.click();
+      await waitFor(() => !dialogButton(text), { timeout: every, label: `${text} to take effect` }).catch(() => null);
+    }
+    return !dialogButton(text);
+  }
+
   async function setCover(file) {
     const input = qa('input[type="file"]').find(
       (i) => i.accept === 'image/jpeg,image/png,image/webp' && !i.closest('[role="dialog"]')
     );
     if (!input) throw new Error('cover image input not found');
     setFiles(input, file);
-    const apply = await waitFor(() => dialogButton('Apply'), { timeout: 30000, label: 'cover Apply button' });
-    apply.click();
-    await waitFor(() => !dialogButton('Apply'), { timeout: 60000, label: 'cover crop to apply' });
+    await waitFor(() => dialogButton('Apply'), { timeout: 30000, label: 'cover Apply button' });
+    // Let the cropper decode the image before applying.
+    await waitFor(() => {
+      const img = inDialog('img');
+      return (img && img.complete && img.naturalWidth > 0) || inDialog('canvas');
+    }, { timeout: 15000, label: 'cover preview' }).catch(() => null);
+    await sleep(500);
+    if (!(await clickUntilGone('Apply'))) throw new Error('cover crop dialog did not close');
     await waitUploadIdle();
   }
 
@@ -323,6 +375,7 @@
         else skipped.push(`cover: ${plan.cover.src}`);
       } catch (e) {
         skipped.push(`cover: ${e.message}`);
+        await closeDialogs();
       }
     }
     await placeCursorAtEnd();
@@ -344,8 +397,17 @@
             reason = e.message;
           }
         }
-        if (file) await insertImage(file, b.alt || b.title || '');
-        else {
+        if (file) {
+          try {
+            await insertImage(file, b.alt || b.title || '');
+          } catch (e) {
+            reason = e.message;
+            await closeDialogs();
+            await placeCursorAtEnd();
+            file = null;
+          }
+        }
+        if (!file) {
           skipped.push(`${b.src}: ${reason}`);
           const label = `[image: ${b.alt || b.src}]`;
           const html = /^https?:\/\//i.test(b.src) ? `<p><a href="${b.src}">${label}</a></p>` : `<p>${label}</p>`;
@@ -367,6 +429,7 @@
     insertTable,
     insertCode,
     insertDivider,
+    closeDialogs,
     insertImage,
     setCover,
     setCaption,
