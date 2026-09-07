@@ -1,0 +1,12 @@
+{
+  "name": "x-md-to-article",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome extension: import Markdown into the X Articles editor with native tables and code blocks.",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "marked": "15.0.12"
+  }
+}

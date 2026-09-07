@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "X Article MD Import",
+  "version": "0.1.0",
+  "description": "Import a Markdown file into the X Articles editor. Tables and code blocks become native X blocks.",
+  "permissions": [],
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["lib/marked.min.js", "src/parser.js", "src/editor.js", "src/content.js"],
+      "css": ["src/content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
