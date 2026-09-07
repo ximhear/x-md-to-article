@@ -28,8 +28,11 @@ dialogs for you, and pastes everything else as rich text.
 | GFM table | Native **Table** block (Markdown passed through) |
 | Fenced code block | Native **Code** block (monospace; language is attempted) |
 | `---` | Native **Divider** |
-| Image | `[image: alt]` link (uploading is not supported) |
-| YAML front matter | Stripped |
+| Image, remote `https://…` | Uploaded through Insert → Media (fetched by the extension's service worker) |
+| Image, local `./img/a.png` | Uploaded when the image was dropped or picked together with the `.md` |
+| Image alt text | Caption of the media block |
+| Leading image (before any body text) | Cover image (can be turned off) |
+| YAML front matter `title:` / `cover:` | Article title / cover image; other keys are ignored |
 
 Verified end-to-end on a real draft with a 170-line technical article: title, 45 blocks in order,
 2 tables, 6 code blocks (including box-drawing directory trees), 7 headings, 3 subheadings,
@@ -51,28 +54,49 @@ The extension is not on the Chrome Web Store yet. Load it unpacked:
 3. Watch the toast at the bottom right. It reports each block as it goes in and a summary at the end.
 
 Content is appended at the end of the editor regardless of the caret position.
-The import takes roughly one second per table or code block; plain text is near-instant.
+Tables and code blocks take about a second each; every image takes a few seconds to upload.
+Keep the X tab visible while it runs. Chrome throttles hidden tabs and X's own dialogs stall.
+
+### Images
+
+- **Remote images** (`https://…`) are downloaded by the extension and uploaded to X. This is why the
+  extension asks for access to all sites.
+- **Local images** (`./img/a.png`) need the files. Either drag the whole folder that holds the `.md`
+  and its images onto the page, or pick the `.md` together with its images in the file dialog.
+  Paths are resolved relative to the `.md`; a unique file-name match is used as a fallback.
+- **Cover**: an image that appears before any body text becomes the cover, or set `cover:` in the
+  front matter. Set `cover: 'none'` in `OPTIONS` to keep every image in the body.
+- **Caption**: the alt text becomes the media block's caption.
+- Accepted formats are JPEG, PNG, WebP and GIF; anything else is re-encoded to PNG when the browser
+  can decode it. Images that cannot be resolved are left as a `[image: alt]` line and listed in the console.
+
+`samples/image-test/` is a small folder to try: drag it onto a draft.
 
 ## Options
 
-`src/content.js` has one option:
+`src/content.js` has two options:
 
 ```js
 const OPTIONS = {
   inlineCode: 'plain', // 'plain' | 'backticks'
+  cover: 'auto',       // 'auto' | 'none'
 };
 ```
 
 X has no inline-code style. `'plain'` drops the backticks, `'backticks'` keeps them visible.
+`cover: 'auto'` promotes a leading image to the cover; `'none'` keeps it in the body.
 
 ## How it works
 
 ```
 manifest.json      MV3; content script on x.com/* (X is a SPA, the script watches the route)
 lib/marked.min.js  marked 15.0.12, GFM lexer
-src/parser.js      Markdown -> plan: [{html} | {table, markdown} | {code, lang, text} | {divider}]
-src/editor.js      Drives the Draft.js composer: synthetic paste, Insert-menu automation
-src/content.js     Floating button, drag and drop, progress toast
+src/parser.js      Markdown -> plan: title, cover, [{html} | {table} | {code} | {divider} | {image}]
+src/images.js      Resolves image sources to Files (data:, remote via worker, local from the drop)
+src/editor.js      Drives the Draft.js composer: synthetic paste, Insert-menu automation, uploads
+src/content.js     Floating button, drag and drop (files or folders), progress toast
+src/background.js  Service worker that fetches remote images cross-origin
+samples/           Example input
 test/              node --test parser tests
 ```
 
@@ -85,9 +109,14 @@ dividers. The editor driver then walks the plan top to bottom:
   through React's native value setter → Update.
 - **Code**: Insert → Code → set the textarea → Insert.
 - **Divider**: Insert → Divider.
+- **Image**: Insert → Media → set `.files` on the dialog's file input and fire `change` → wait until
+  the "Cancel upload" button disappears → click the caption placeholder → paste the alt text into the
+  caption box → Save.
+- **Cover**: set `.files` on the cover input above the title → "Apply" in the crop dialog.
 
 Dialog nodes are replaced by React while they animate in, so the driver never holds a reference
-to a dialog; it re-queries `[role="dialog"] …` on every poll.
+to a dialog; it re-queries `[role="dialog"] …` and reacts to DOM mutations instead of polling.
+Timers are hopped through a `MessageChannel` so a hidden tab's timer throttling does not stall the run.
 
 ## Notes on the X editor (as of 2026-09-07)
 
@@ -106,7 +135,8 @@ npm test
 
 ## Limitations
 
-- No image upload. Images become a labelled link.
+- Images inside lists, quotes and table cells cannot become blocks; they stay as a `[image: alt]` link.
+- Videos and GIF-set blocks are not created; one image per media block.
 - LaTeX blocks and tweet embeds are not handled.
 - The Code dialog's language picker is best-effort; blocks fall back to plain monospace.
 
@@ -142,7 +172,18 @@ X 편집기에는 **Insert → Table** 블록이 있고, 그 편집 화면은 GF
 2. 우측 하단 **Import .md** 버튼을 누르거나 `.md` 파일을 페이지에 끌어다 놓습니다.
 3. 우측 하단 토스트에 진행 상황과 결과 요약이 표시됩니다.
 
-내용은 커서 위치와 무관하게 편집기 끝에 이어 붙습니다.
+내용은 커서 위치와 무관하게 편집기 끝에 이어 붙습니다. 이미지는 한 장에 몇 초씩 걸립니다.
+실행 중에는 X 탭을 화면에 보이게 두세요. 숨겨진 탭은 Chrome이 느리게 만들고 X의 대화상자도 멈춥니다.
+
+### 이미지
+
+- **원격 이미지**는 확장이 내려받아 X에 업로드합니다. 이 때문에 모든 사이트 접근 권한을 요청합니다.
+- **로컬 이미지**는 파일이 필요합니다. `.md`와 이미지가 든 **폴더째로** 페이지에 끌어다 놓거나, 파일 선택 창에서 `.md`와 이미지를 함께 고르세요. 경로는 `.md` 기준 상대 경로로 찾고, 못 찾으면 파일 이름이 유일하게 일치하는 것을 씁니다.
+- **커버**: 본문 텍스트보다 앞에 나오는 이미지가 커버가 됩니다. frontmatter의 `cover:`로 지정할 수도 있습니다. `OPTIONS.cover`를 `'none'`으로 두면 모든 이미지가 본문에 남습니다.
+- **캡션**: alt 텍스트가 미디어 블록 캡션이 됩니다.
+- JPEG, PNG, WebP, GIF를 받습니다. 그 외 형식은 브라우저가 디코딩할 수 있으면 PNG로 다시 인코딩합니다. 못 찾은 이미지는 `[image: alt]` 한 줄로 남고 콘솔에 목록이 찍힙니다.
+
+`samples/image-test/` 폴더를 초안에 끌어다 놓으면 바로 시험해 볼 수 있습니다.
 
 ### 변환 규칙
 
@@ -156,8 +197,11 @@ X 편집기에는 **Insert → Table** 블록이 있고, 그 편집 화면은 GF
 | GFM 표 | 네이티브 **Table** 블록 |
 | 펜스 코드 블록 | 네이티브 **Code** 블록 (고정폭) |
 | `---` | 네이티브 **Divider** |
-| 이미지 | `[image: alt]` 링크 (업로드 미지원) |
-| YAML frontmatter | 제거 |
+| 원격 이미지 `https://…` | Insert → Media로 업로드 (확장의 서비스 워커가 내려받음) |
+| 로컬 이미지 `./img/a.png` | `.md`와 함께 드롭·선택한 파일에서 찾아 업로드 |
+| 이미지 alt 텍스트 | 미디어 블록 캡션 |
+| 본문 앞에 오는 첫 이미지 | 커버 이미지 (끌 수 있음) |
+| frontmatter `title:` / `cover:` | 글 제목 / 커버 이미지 |
 
 ### 옵션
 
@@ -165,6 +209,7 @@ X 편집기에는 **Insert → Table** 블록이 있고, 그 편집 화면은 GF
 
 ### 한계
 
-- 이미지 업로드는 지원하지 않습니다.
+- 목록·인용·표 셀 안의 이미지는 블록이 될 수 없어 `[image: alt]` 링크로 남습니다.
+- 동영상과 GIF 묶음 블록은 만들지 않습니다. 미디어 블록 하나에 이미지 하나입니다.
 - LaTeX 블록과 트윗 임베드는 처리하지 않습니다.
 - X 편집기 DOM이 바뀌면 `src/editor.js` 의 선택자를 손봐야 합니다.

@@ -32,3 +32,4 @@
 #xmd-toast[data-kind="ok"] { background: #00ba7c; }
 #xmd-toast[data-kind="error"] { background: #f4212e; }
 #xmd-toast[hidden] { display: none; }
+#xmd-toast[data-kind="warn"] { background: #b8860b; }

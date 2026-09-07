@@ -54,10 +54,12 @@ test('bold, links, lists, blockquote and hr', () => {
   assert.equal(p.blocks[2].html, '<p>끝</p>');
 });
 
-test('frontmatter is stripped', () => {
+test('frontmatter is stripped; its title wins and the H1 is dropped', () => {
   const p = parse('---\ntitle: x\n---\n# T\n\nbody');
-  assert.equal(p.title, 'T');
+  assert.equal(p.title, 'x');
   assert.equal(p.blocks[0].html, '<p>body</p>');
+  const q = parse('---\nauthor: me\n---\n# T\n\nbody');
+  assert.equal(q.title, 'T');
 });
 
 test('target document: codex-file-map.md', { skip: !fs.existsSync('/Users/gzonelee/git/codex-tip/docs/codex-file-map.md') }, () => {
@@ -73,4 +75,42 @@ test('target document: codex-file-map.md', { skip: !fs.existsSync('/Users/gzonel
   assert.equal((html.match(/<h2>/g) || []).length, 3, 'three H3 -> h2');
   assert.ok(!/<code>/.test(html), 'no inline <code> left in body html');
   assert.match(p.blocks.find((b) => b.type === 'table').markdown, /^\| 범위 \| 대표 위치 \| 쓰임 \|/);
+});
+
+test('a standalone image paragraph becomes an image block', () => {
+  const p = parse('# T\n\n앞 문단\n\n![다이어그램](./img/a.png "제목")\n\n뒤');
+  assert.deepEqual(p.blocks.map((b) => b.type), ['html', 'image', 'html']);
+  assert.deepEqual(p.blocks[1], { type: 'image', src: './img/a.png', alt: '다이어그램', title: '제목' });
+  assert.equal(p.cover, null);
+});
+
+test('a leading image becomes the cover with cover:auto, stays in body with cover:none', () => {
+  const md = '# T\n\n![hero](https://e.com/h.jpg)\n\n본문';
+  const a = parse(md);
+  assert.deepEqual(a.cover, { src: 'https://e.com/h.jpg', alt: 'hero', title: '' });
+  assert.deepEqual(a.blocks.map((b) => b.type), ['html']);
+  const n = parse(md, { cover: 'none' });
+  assert.equal(n.cover, null);
+  assert.deepEqual(n.blocks.map((b) => b.type), ['image', 'html']);
+});
+
+test('inline image inside a text paragraph is split out after the text', () => {
+  const p = parse('# T\n\n글 ![x](a.png) 계속');
+  assert.equal(p.blocks[0].type, 'html');
+  assert.equal(p.blocks[0].html, '<p>글  계속</p>');
+  assert.equal(p.blocks[1].type, 'image');
+  assert.equal(p.cover, null, 'image after text is not a cover');
+});
+
+test('images inside lists fall back to a labelled link', () => {
+  const p = parse('- ![a](https://e.com/a.png)\n- ![b](rel.png)');
+  assert.match(p.blocks[0].html, /<a href="https:\/\/e.com\/a.png">\[image: a\]<\/a>/);
+  assert.match(p.blocks[0].html, /\[image: b\]/);
+});
+
+test('frontmatter title and cover win over the body', () => {
+  const p = parse('---\ntitle: "FM 제목"\ncover: cover.png\n---\n# 본문 H1\n\n![x](first.png)\n\n텍스트');
+  assert.equal(p.title, 'FM 제목');
+  assert.deepEqual(p.cover, { src: 'cover.png', alt: '' });
+  assert.deepEqual(p.blocks.map((b) => b.type), ['image', 'html'], 'first image stays in body when frontmatter sets the cover');
 });

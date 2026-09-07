@@ -11,20 +11,60 @@
  *                     -> pencil opens dialog with <textarea> (GFM) and "Update" button
  *  - Code flow:       menuitem Code -> dialog with language <input>, <textarea>, "Insert"
  *  - Rich text:       synthetic ClipboardEvent('paste') with text/html on the composer
+ *  - Media flow:      menuitem Media -> dialog with input[type=file][multiple]; setting
+ *                     .files + change uploads it; "Cancel upload" button exists until done.
+ *                     The new <section> has an "Edit media" button and a caption span that
+ *                     opens an "Edit Caption" dialog with a contenteditable textbox + Save.
+ *  - Cover:           input[type=file][accept="image/jpeg,image/png,image/webp"] outside
+ *                     any dialog; setting .files opens a crop dialog whose "Apply" confirms.
  */
 (function (root) {
   const XMD = (root.XMD = root.XMD || {});
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Hidden tabs throttle chained setTimeouts down to once a minute. Hopping through a
+  // MessageChannel after every timer resets the nesting level so we only ever pay the
+  // 1-second alignment, and waitFor reacts to DOM mutations instead of polling.
+  const hop = () =>
+    new Promise((r) => {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => r();
+      ch.port2.postMessage(0);
+    });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms)).then(hop);
 
-  async function waitFor(fn, { timeout = 8000, interval = 80, label = 'condition' } = {}) {
+  function waitFor(fn, { timeout = 15000, interval = 250, label = 'condition' } = {}) {
     const end = Date.now() + timeout;
-    while (Date.now() < end) {
-      const v = fn();
-      if (v) return v;
-      await sleep(interval);
+    const first = safe(fn);
+    if (first) return Promise.resolve(first);
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const finish = () => {
+        done = true;
+        mo.disconnect();
+        clearInterval(timer);
+      };
+      const check = () => {
+        if (done) return;
+        const v = safe(fn);
+        if (v) {
+          finish();
+          resolve(v);
+        } else if (Date.now() > end) {
+          finish();
+          reject(new Error(`Timed out waiting for ${label}`));
+        }
+      };
+      const mo = new MutationObserver(() => queueMicrotask(check));
+      mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+      const timer = setInterval(check, interval);
+    });
+  }
+  function safe(fn) {
+    try {
+      return fn();
+    } catch (e) {
+      return null;
     }
-    throw new Error(`Timed out waiting for ${label}`);
   }
 
   const q = (sel, r = document) => r.querySelector(sel);
@@ -158,14 +198,133 @@
     await sleep(200);
   }
 
+  function setFiles(input, file) {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  // X disables the editor and shows "Cancel upload" / "Processing media…" while a
+  // file is uploading. Wait until that is gone.
+  async function waitUploadIdle(timeout = 120000) {
+    await sleep(300);
+    await waitFor(() => !byText(qa('button'), 'Cancel upload') && !qa('button').some((b) => /Processing media/i.test(b.textContent)), {
+      timeout,
+      interval: 200,
+      label: 'upload to finish',
+    });
+    await sleep(300);
+  }
+
+  function imageSections() {
+    return blocks().filter((b) => b.querySelector('img, video'));
+  }
+
+  // Put text into a React/Draft.js contenteditable box without relying on focus:
+  // a synthetic paste first, then execCommand as a fallback.
+  async function typeInto(box, text) {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', text);
+    box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    await sleep(150);
+    if ((box.textContent || '').includes(text)) return true;
+    box.focus();
+    await sleep(80);
+    if (document.activeElement === box || box.contains(document.activeElement)) {
+      document.execCommand('insertText', false, text);
+      await sleep(120);
+    }
+    return (box.textContent || '').includes(text);
+  }
+
+  async function setCaption(section, caption) {
+    const leaf = qa('*', section).find((e) => e.children.length === 0 && /caption/i.test(e.textContent));
+    if (!leaf) return false;
+    const titleBox = q('textarea[placeholder="Add a title"]');
+    const titleBefore = titleBox ? titleBox.value : null;
+    leaf.click();
+    const box = await waitFor(() => {
+      const d = qa('[role="dialog"]').find((x) => /caption/i.test(x.textContent));
+      return d && d.querySelector('[role="textbox"], [contenteditable="true"], textarea');
+    }, { label: 'caption box' });
+    let ok;
+    if (box.tagName === 'TEXTAREA' || box.tagName === 'INPUT') {
+      setReactValue(box, caption);
+      ok = true;
+    } else {
+      ok = await typeInto(box, caption);
+    }
+    const save = await waitFor(() => dialogButton('Save'), { label: 'caption Save' });
+    if (ok) save.click();
+    else (dialogButton('Close') || inDialog('button[aria-label="Close"]') || save).click();
+    await waitDialogClosed();
+    await sleep(150);
+    // execCommand can leak into whatever had focus; undo that if it hit the title.
+    if (titleBox && titleBefore !== null && titleBox.value !== titleBefore) setReactValue(titleBox, titleBefore);
+    return ok;
+  }
+
+  async function insertImage(file, caption) {
+    const before = imageSections().length;
+    await openInsertItem('Media');
+    const input = await waitFor(() => inDialog('input[type="file"]'), { label: 'media file input' });
+    setFiles(input, file);
+    await waitDialogClosed();
+    const section = await waitFor(
+      () => {
+        const s = imageSections();
+        return s.length > before ? s[s.length - 1] : null;
+      },
+      { timeout: 30000, label: 'new media block' }
+    );
+    await waitUploadIdle();
+    if (caption) {
+      try {
+        await setCaption(section, caption);
+      } catch (e) {
+        console.warn('[xmd] caption skipped:', e.message);
+        const close = dialogButton('Close') || inDialog('button[aria-label="Close"]');
+        if (close) close.click();
+        await waitDialogClosed().catch(() => {});
+      }
+    }
+    await placeCursorAtEnd();
+  }
+
+  async function setCover(file) {
+    const input = qa('input[type="file"]').find(
+      (i) => i.accept === 'image/jpeg,image/png,image/webp' && !i.closest('[role="dialog"]')
+    );
+    if (!input) throw new Error('cover image input not found');
+    setFiles(input, file);
+    const apply = await waitFor(() => dialogButton('Apply'), { timeout: 30000, label: 'cover Apply button' });
+    apply.click();
+    await waitFor(() => !dialogButton('Apply'), { timeout: 60000, label: 'cover crop to apply' });
+    await waitUploadIdle();
+  }
+
   async function insertDivider() {
     await openInsertItem('Divider');
     await sleep(250);
   }
 
-  // Run a parsed plan against the editor. onProgress(i, total, block) is optional.
-  async function runPlan(plan, { onProgress } = {}) {
+  // Run a parsed plan against the editor.
+  //   resolveImage(block|cover, {forCover}) -> File | null (null = skip with fallback text)
+  //   onProgress(i, total, block) is optional. Returns { skipped: [reasons] }.
+  async function runPlan(plan, { onProgress, resolveImage } = {}) {
+    const skipped = [];
     if (plan.title) await setTitle(plan.title);
+    if (plan.cover && resolveImage) {
+      if (onProgress) onProgress(-1, plan.blocks.length, { type: 'cover' });
+      try {
+        const file = await resolveImage(plan.cover, { forCover: true });
+        if (file) await setCover(file);
+        else skipped.push(`cover: ${plan.cover.src}`);
+      } catch (e) {
+        skipped.push(`cover: ${e.message}`);
+      }
+    }
     await placeCursorAtEnd();
     const total = plan.blocks.length;
     for (let i = 0; i < total; i++) {
@@ -175,8 +334,27 @@
       else if (b.type === 'table') await insertTable(b.markdown);
       else if (b.type === 'code') await insertCode(b.text, b.lang);
       else if (b.type === 'divider') await insertDivider();
+      else if (b.type === 'image') {
+        let file = null;
+        let reason = 'no image resolver';
+        if (resolveImage) {
+          try {
+            file = await resolveImage(b, { forCover: false });
+          } catch (e) {
+            reason = e.message;
+          }
+        }
+        if (file) await insertImage(file, b.alt || b.title || '');
+        else {
+          skipped.push(`${b.src}: ${reason}`);
+          const label = `[image: ${b.alt || b.src}]`;
+          const html = /^https?:\/\//i.test(b.src) ? `<p><a href="${b.src}">${label}</a></p>` : `<p>${label}</p>`;
+          await pasteHtml(html, label);
+        }
+      }
     }
     if (onProgress) onProgress(total, total, null);
+    return { skipped };
   }
 
   XMD.editor = {
@@ -189,6 +367,10 @@
     insertTable,
     insertCode,
     insertDivider,
+    insertImage,
+    setCover,
+    setCaption,
+    waitUploadIdle,
     runPlan,
     waitFor,
     sleep,

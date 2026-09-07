@@ -17,6 +17,9 @@
     // How to render `inline code` in body text. X has no inline-code style,
     // so it is either plain text or wrapped in backticks.
     inlineCode: 'plain', // 'plain' | 'backticks'
+    // 'auto': an image that appears before any body text becomes the cover image.
+    // 'none': every image stays in the body. Frontmatter `cover:` always wins.
+    cover: 'auto', // 'auto' | 'none'
   };
 
   function escapeHtml(s) {
@@ -27,29 +30,53 @@
       .replace(/"/g, '&quot;');
   }
 
-  function stripFrontmatter(md) {
-    const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(md);
-    return m ? md.slice(m[0].length) : md;
+  // Returns { body, meta } where meta holds simple `key: value` pairs (title, cover).
+  function splitFrontmatter(md) {
+    const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(md);
+    if (!m) return { body: md, meta: {} };
+    const meta = {};
+    for (const line of m[1].split('\n')) {
+      const kv = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(line.trim());
+      if (kv) meta[kv[1].toLowerCase()] = kv[2].trim().replace(/^["']|["']$/g, '');
+    }
+    return { body: md.slice(m[0].length), meta };
   }
 
-  function makeRenderer(opts) {
+  function makeRenderer(opts, { dropImages = false } = {}) {
     const r = new marked.Renderer();
     r.codespan = ({ text }) => {
       const t = escapeHtml(text);
       return opts.inlineCode === 'backticks' ? '`' + t + '`' : t;
     };
     r.image = ({ href, text }) => {
-      // The editor drops <img> on paste; keep a visible pointer instead.
-      const label = text ? `이미지: ${text}` : '이미지';
-      return `<a href="${escapeHtml(href)}">[${escapeHtml(label)}]</a>`;
+      if (dropImages) return '';
+      // Images that cannot become their own block (inside lists, quotes, table
+      // cells) stay as a visible pointer, since the editor drops <img> on paste.
+      return imageFallbackHtml(href, text);
     };
     r.html = ({ text }) => escapeHtml(text);
     r.br = () => '<br>';
     return r;
   }
 
-  function inline(tokens, ctx) {
-    return marked.Parser.parseInline(tokens || [], { renderer: ctx.renderer });
+  function imageFallbackHtml(href, alt) {
+    const label = `[image: ${alt || href}]`;
+    return /^https?:\/\//i.test(href || '')
+      ? `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`
+      : escapeHtml(label);
+  }
+
+  function inline(tokens, ctx, renderer) {
+    return marked.Parser.parseInline(tokens || [], { renderer: renderer || ctx.renderer });
+  }
+
+  // Top-level and nested image tokens of a paragraph, in document order.
+  function collectImages(tokens, out = []) {
+    for (const t of tokens || []) {
+      if (t.type === 'image') out.push({ src: t.href, alt: t.text || '', title: t.title || '' });
+      else if (t.tokens) collectImages(t.tokens, out);
+    }
+    return out;
   }
 
   function plainText(tokens) {
@@ -115,11 +142,12 @@
 
   function parse(markdown, options) {
     const opts = Object.assign({}, DEFAULTS, options || {});
-    const ctx = { renderer: makeRenderer(opts) };
-    const md = stripFrontmatter(String(markdown).replace(/\r\n/g, '\n'));
+    const ctx = { renderer: makeRenderer(opts), noImageRenderer: makeRenderer(opts, { dropImages: true }) };
+    const { body: md, meta } = splitFrontmatter(String(markdown).replace(/\r\n/g, '\n'));
     const tokens = marked.lexer(md, { gfm: true });
 
-    let title = null;
+    let title = meta.title || null;
+    let cover = meta.cover ? { src: meta.cover, alt: '' } : null;
     const blocks = [];
     let htmlBuf = [];
     let textBuf = [];
@@ -136,6 +164,7 @@
     };
 
     const firstHeading = tokens.find((t) => t.type === 'heading');
+    // The first H1 is the title. With a frontmatter title it is dropped instead.
     const titleToken = firstHeading && firstHeading.depth === 1 ? firstHeading : null;
     const minDepth = Math.min(
       ...tokens.filter((t) => t.type === 'heading' && t !== titleToken).map((t) => t.depth),
@@ -148,16 +177,33 @@
           break;
         case 'heading': {
           if (t === titleToken) {
-            title = plainText(t.tokens).trim();
+            if (!title) title = plainText(t.tokens).trim();
             break;
           }
           const lvl = headingLevel(t.depth, minDepth);
           pushHtml(`<h${lvl}>${inline(t.tokens, ctx)}</h${lvl}>`, plainText(t.tokens));
           break;
         }
-        case 'paragraph':
-          pushHtml(`<p>${inline(t.tokens, ctx)}</p>`, plainText(t.tokens));
+        case 'paragraph': {
+          const images = collectImages(t.tokens);
+          if (!images.length) {
+            pushHtml(`<p>${inline(t.tokens, ctx)}</p>`, plainText(t.tokens));
+            break;
+          }
+          const html = inline(t.tokens, ctx, ctx.noImageRenderer);
+          const text = html.replace(/<[^>]+>/g, '').trim();
+          if (text) pushHtml(`<p>${html}</p>`, text);
+          for (const img of images) {
+            // A leading image (nothing but the title before it) becomes the cover.
+            if (opts.cover === 'auto' && !cover && !blocks.length && !htmlBuf.length) {
+              cover = img;
+              continue;
+            }
+            flush();
+            blocks.push({ type: 'image', src: img.src, alt: img.alt, title: img.title });
+          }
           break;
+        }
         case 'list':
           pushHtml(renderList(t, ctx), t.raw.trim());
           break;
@@ -184,11 +230,12 @@
       }
     }
     flush();
-    return { title, blocks };
+    return { title, cover, blocks };
   }
 
   const XMD = (root.XMD = root.XMD || {});
   XMD.parse = parse;
   XMD.tableMarkdown = tableMarkdown;
+  XMD.imageFallbackHtml = imageFallbackHtml;
   XMD.DEFAULTS = DEFAULTS;
 })(typeof window !== 'undefined' ? window : globalThis);
