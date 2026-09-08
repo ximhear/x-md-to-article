@@ -66,6 +66,35 @@
       : escapeHtml(label);
   }
 
+  // Raw HTML support is limited to <blockquote>. Inside it we keep a small set of
+  // inline tags and escape everything else.
+  const INLINE_KEEP = /<\/?(strong|em|b|i|a|br|del|s)\b[^>]*>/gi;
+  function sanitizeInline(html) {
+    const keep = [];
+    const withMarkers = html.replace(INLINE_KEEP, (m) => {
+      // only allow href on <a>
+      let tag = m;
+      if (/^<a\b/i.test(m)) {
+        const href = /href\s*=\s*"([^"]*)"|href\s*=\s*'([^']*)'/i.exec(m);
+        tag = href ? `<a href="${escapeHtml(href[1] || href[2] || '')}">` : '<a>';
+      } else if (/^<br/i.test(m)) tag = '<br>';
+      else tag = m.replace(/\s[^>]*/, '').toLowerCase();
+      keep.push(tag);
+      return `\u0000${keep.length - 1}\u0000`;
+    });
+    return escapeHtml(withMarkers.replace(/<[^>]+>/g, '')).replace(/\u0000(\d+)\u0000/g, (_, i) => keep[+i]);
+  }
+  const BLOCKQUOTE_OPEN = /^\s*<blockquote\b[^>]*>\s*$/i;
+  const BLOCKQUOTE_CLOSE = /^\s*<\/blockquote>\s*$/i;
+  const BLOCKQUOTE_WHOLE = /^\s*<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>\s*$/i;
+  function htmlBlockquote(inner) {
+    const parts = inner
+      .split(/<\/p>|<p\b[^>]*>|\n\s*\n/i)
+      .map((x) => sanitizeInline(x.trim()))
+      .filter(Boolean);
+    return `<blockquote>${parts.join('<br>')}</blockquote>`;
+  }
+
   function inline(tokens, ctx, renderer) {
     return marked.Parser.parseInline(tokens || [], { renderer: renderer || ctx.renderer });
   }
@@ -163,6 +192,8 @@
       textBuf.push(text);
     };
 
+    // Paragraph parts collected while inside a raw <blockquote> … </blockquote>.
+    let rawQuote = null;
     const firstHeading = tokens.find((t) => t.type === 'heading');
     // The first H1 is the title. With a frontmatter title it is dropped instead.
     const titleToken = firstHeading && firstHeading.depth === 1 ? firstHeading : null;
@@ -185,6 +216,10 @@
           break;
         }
         case 'paragraph': {
+          if (rawQuote) {
+            rawQuote.push(inline(t.tokens, ctx));
+            break;
+          }
           const images = collectImages(t.tokens);
           if (!images.length) {
             pushHtml(`<p>${inline(t.tokens, ctx)}</p>`, plainText(t.tokens));
@@ -222,12 +257,32 @@
           flush();
           blocks.push({ type: 'divider' });
           break;
-        case 'html':
-          pushHtml(`<p>${escapeHtml(t.raw.trim())}</p>`, t.raw.trim());
+        case 'html': {
+          const raw = t.raw;
+          const whole = BLOCKQUOTE_WHOLE.exec(raw);
+          if (whole) {
+            const html = htmlBlockquote(whole[1]);
+            pushHtml(html, html.replace(/<[^>]+>/g, ' ').trim());
+          } else if (BLOCKQUOTE_OPEN.test(raw)) {
+            rawQuote = [];
+          } else if (BLOCKQUOTE_CLOSE.test(raw) && rawQuote) {
+            const html = `<blockquote>${rawQuote.join('<br>')}</blockquote>`;
+            pushHtml(html, html.replace(/<[^>]+>/g, ' ').trim());
+            rawQuote = null;
+          } else if (rawQuote) {
+            rawQuote.push(sanitizeInline(raw.trim()));
+          } else {
+            pushHtml(`<p>${escapeHtml(raw.trim())}</p>`, raw.trim());
+          }
           break;
+        }
         default:
           pushHtml(`<p>${escapeHtml(t.raw || '')}</p>`, t.raw || '');
       }
+    }
+    if (rawQuote) {
+      const html = `<blockquote>${rawQuote.join('<br>')}</blockquote>`;
+      pushHtml(html, html.replace(/<[^>]+>/g, ' ').trim());
     }
     flush();
     return { title, cover, blocks };

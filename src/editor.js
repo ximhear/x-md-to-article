@@ -97,7 +97,11 @@
     ta.blur();
   }
 
-  // Focus the composer and put the caret at the very end of the last block.
+  // Focus the composer and move Draft.js's own selection to the very end.
+  // Draft ignores programmatic DOM selection changes until a mouseup makes React
+  // re-read the selection, so fake one. If the last block already holds text,
+  // press Enter (Draft handles the keydown itself) so the import starts on a
+  // fresh block instead of merging into that paragraph.
   async function placeCursorAtEnd() {
     const c = await waitFor(composer, { label: 'composer' });
     c.focus();
@@ -105,13 +109,27 @@
     const b = blocks();
     const last = b[b.length - 1];
     if (!last) return;
+    const walker = document.createTreeWalker(last, NodeFilter.SHOW_TEXT);
+    let text = null;
+    let n;
+    while ((n = walker.nextNode())) text = n;
     const range = document.createRange();
-    range.selectNodeContents(last);
-    range.collapse(false);
+    if (text) range.setStart(text, text.data.length);
+    else range.setStart(last, 0);
+    range.collapse(true);
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    await sleep(80);
+    const target = (text && text.parentElement) || last;
+    target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await sleep(120);
+    if (last.textContent.trim() && !last.querySelector('table, pre, img, video')) {
+      const key = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+      c.dispatchEvent(new KeyboardEvent('keydown', key));
+      c.dispatchEvent(new KeyboardEvent('keyup', key));
+      await sleep(150);
+    }
   }
 
   async function pasteHtml(html, plain) {

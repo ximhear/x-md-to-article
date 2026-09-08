@@ -114,3 +114,18 @@ test('frontmatter title and cover win over the body', () => {
   assert.deepEqual(p.cover, { src: 'cover.png', alt: '' });
   assert.deepEqual(p.blocks.map((b) => b.type), ['image', 'html'], 'first image stays in body when frontmatter sets the cover');
 });
+
+test('raw <blockquote> wrappers around markdown paragraphs become one quote', () => {
+  const p = parse('# T\n\n**English**\n\n<blockquote class="longform-blockquote">\n\nFirst **bold** line.\n\nSecond line.\n\n</blockquote>\n\n뒤');
+  assert.equal(p.blocks[0].html, '<p><strong>English</strong></p><blockquote>First <strong>bold</strong> line.<br>Second line.</blockquote><p>뒤</p>');
+});
+
+test('a whole <blockquote><p>…</p></blockquote> html block is converted and sanitized', () => {
+  const p = parse('<blockquote class="x">\n<p>A <em>e</em> <a href="https://e.com" onclick="x">l</a></p>\n<p>B <script>bad()</script></p>\n</blockquote>');
+  assert.equal(p.blocks[0].html, '<blockquote>A <em>e</em> <a href="https://e.com">l</a><br>B bad()</blockquote>');
+});
+
+test('other raw html is still escaped', () => {
+  const p = parse('<div class="x">hi</div>');
+  assert.equal(p.blocks[0].html, '<p>&lt;div class=&quot;x&quot;&gt;hi&lt;/div&gt;</p>');
+});
